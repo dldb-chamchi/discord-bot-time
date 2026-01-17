@@ -11,6 +11,7 @@ async def main():
         await bot.load_extension("cogs.mention_shortcut")
         await bot.load_extension("cogs.menu_commands")
         await bot.load_extension("cogs.notion_watcher")
+        await bot.load_extension("cogs.toeic_alarm")
 
         # 실제 디스코드 봇 실행
         await bot.start(DISCORD_TOKEN)
