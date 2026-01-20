@@ -12,12 +12,13 @@ from config import (
     REPORT_CHANNEL_ID_ENTER, 
     DATA_FILE, 
     REPORT_CHANNEL_ID_ALARM,
+    REPORT_CHANNEL_ID_DAILY,
     NOTION_TOKEN 
 )
-from time_utils import now_kst, iso
+from time_utils import now_kst, iso, KST
 from state_store import StateStore
 
-COOLDOWN_SECONDS = 10 * 60
+COOLDOWN_SECONDS = 10 * 60  # 10분
 
 class VoiceTimeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -28,12 +29,13 @@ class VoiceTimeCog(commands.Cog):
         self.channel_active = False
         self.last_alert_time: dt.datetime | None = None
 
+        # 주간 리포트 태스크 시작
         self.daily_reporter.start()
 
     def cog_unload(self):
         self.daily_reporter.cancel()
 
-    # 노션 일정을 실제 퇴장 시간으로 업데이트하는 함수입니다.
+    # 노션 일정을 실제 퇴장 시간으로 업데이트하는 내부 함수
     async def _update_notion_end_time(self, page_id: str, start_iso: str, actual_leave_iso: str):
         url = f"https://api.notion.com/v1/pages/{page_id}"
         headers = {
@@ -52,12 +54,15 @@ class VoiceTimeCog(commands.Cog):
             }
         }
         async with aiohttp.ClientSession() as session:
-            async with session.patch(url, headers=headers, json=payload) as resp:
-                if resp.status == 200:
-                    print(f"[NOTION] 페이지 {page_id} 시간 업데이트 성공")
-                else:
-                    text = await resp.text()
-                    print(f"[NOTION] 업데이트 실패 ({resp.status}): {text}")
+            try:
+                async with session.patch(url, headers=headers, json=payload) as resp:
+                    if resp.status == 200:
+                        print(f"[NOTION] 페이지 {page_id} 시간 업데이트 성공")
+                    else:
+                        text = await resp.text()
+                        print(f"[NOTION] 업데이트 실패 ({resp.status}): {text}")
+            except Exception as e:
+                print(f"[NOTION] API 요청 중 오류 발생: {e}")
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -74,6 +79,7 @@ class VoiceTimeCog(commands.Cog):
 
         # 1. 입장 (Enter)
         if before_id != target_id and after_id == target_id:
+            # 세션 시작 시간 기록
             self.store.state["sessions"][uid] = iso(now_kst())
             self.store.save()
 
@@ -83,18 +89,19 @@ class VoiceTimeCog(commands.Cog):
                 return
 
             members_in_channel = [m for m in voice_channel.members if not m.bot]
-
             now = now_kst()
             cooldown_ok = (
                 self.last_alert_time is None
                 or (now - self.last_alert_time).total_seconds() > COOLDOWN_SECONDS
             )
 
+            # 채널에 아무도 없다가 첫 입장 시 알림
             if not self.channel_active and members_in_channel and cooldown_ok:
                 self.channel_active = True
                 self.last_alert_time = now
 
-                await discord.utils.sleep_until(discord.utils.utcnow() + dt.timedelta(seconds=1))
+                # 동시 입장 보정을 위해 잠시 대기
+                await asyncio.sleep(1)
 
                 members_not_in_channel = [
                     m for m in guild.members
@@ -103,6 +110,7 @@ class VoiceTimeCog(commands.Cog):
 
                 report_ch = self.bot.get_channel(REPORT_CHANNEL_ID_ENTER) \
                     or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ENTER)
+                
                 header = f'음성 채널 **{voice_channel.name}**에 멤버가 있습니다!'
 
                 if members_not_in_channel:
@@ -113,42 +121,82 @@ class VoiceTimeCog(commands.Cog):
 
         # 2. 퇴장 (Leave)
         if before_id == target_id and after_id != target_id:
-            leave_time = now_kst() # 실제 나간 시간을 기록합니다.
+            leave_time = now_kst()
+            
+            # [추가] 칭찬용 세션 시간 계산
+            start_iso = self.store.state["sessions"].get(uid)
+            session_seconds = 0
+            if start_iso:
+                start_dt = dt.datetime.fromisoformat(start_iso)
+                session_seconds = int((leave_time - start_dt).total_seconds())
+
+            # 누적 시간 저장 및 세션 종료
             self.store.add_session_time(member.id)
             self.store.state["sessions"].pop(uid, None)
             self.store.save()
 
+            # 채널이 비었는지 확인
             if before.channel and len([m for m in before.channel.members if not m.bot]) == 0:
                 self.channel_active = False
 
-            # 일정이 남았는지 확인하고 10분 대기 로직을 수행합니다.
+            # --- [기능 1] 목표 초과 달성 칭찬 로직 ---
             if hasattr(self.bot, 'active_schedules') and member.id in self.bot.active_schedules:
-                # 10분(600초)을 기다립니다.
+                # 오늘 이미 칭찬받았는지 체크
+                today = leave_time.date()
+                if not hasattr(self.bot, 'last_praise_date') or self.bot.last_praise_date != today:
+                    self.bot.praised_today = set()
+                    self.bot.last_praise_date = today
+
+                sched_info = self.bot.active_schedules[member.id]
+                planned_start = sched_info["start"]
+                planned_end = sched_info["end"]
+                
+                # 계획된 총 시간과 오늘 총 누적 시간 비교
+                planned_seconds = int((planned_end - planned_start).total_seconds())
+                total_seconds = self.store.state["totals"].get(uid, 0)
+
+                if total_seconds > planned_seconds and member.id not in self.bot.praised_today:
+                    praise_ch = self.bot.get_channel(REPORT_CHANNEL_ID_DAILY) or \
+                                await self.bot.fetch_channel(REPORT_CHANNEL_ID_DAILY)
+                    if praise_ch:
+                        over_time_min = (total_seconds - planned_seconds) // 60
+                        await praise_ch.send(
+                            f"🎊 **{member.mention} 님, 정말 대단해요!**\n"
+                            f"오늘 계획했던 시간보다 **{over_time_min}분**이나 더 공부하셨습니다! 🏆\n"
+                            f"목표를 초과 달성하신 당신을 응원합니다! 👏👏👏"
+                        )
+                        self.bot.praised_today.add(member.id)
+
+            # --- [기능 2] 조기 퇴장 및 10분 미복귀 알람 로직 ---
+            if hasattr(self.bot, 'active_schedules') and member.id in self.bot.active_schedules:
+                # 10분 대기
                 await asyncio.sleep(600)
 
-                # 10분 후 현재 상태를 다시 확인합니다.
+                # 10분 후 복귀 여부 확인
                 current_member = member.guild.get_member(member.id)
-                
-                is_back_in_channel = False
+                is_back = False
                 if current_member and current_member.voice and current_member.voice.channel:
                     if current_member.voice.channel.id == target_id:
-                        is_back_in_channel = True
+                        is_back = True
                 
-                # 돌아왔다면 로직을 종료합니다.
-                if is_back_in_channel:
+                # 돌아왔다면 알람 및 업데이트 취소
+                if is_back:
                     return
 
-                # 아직 복귀하지 않았다면 노션 일정을 수정합니다.
+                # 돌아오지 않았다면 일정 정보 확인
                 sched_info = self.bot.active_schedules[member.id]
                 scheduled_end = sched_info["end"]
-                page_id = sched_info["page_id"]
-                start_time_iso = sched_info["start"]
                 
+                # 예정된 시간보다 일찍 나갔을 때만 작동
                 if leave_time < scheduled_end:
-                    # 노션 종료 시간을 실제 퇴장 시간으로 변경합니다.
-                    leave_time_iso = leave_time.isoformat()
-                    await self._update_notion_end_time(page_id, start_time_iso, leave_time_iso)
+                    # 노션 업데이트 (시작 시간은 유지, 종료 시간은 실제 퇴장 시간으로)
+                    await self._update_notion_end_time(
+                        sched_info["page_id"], 
+                        sched_info["start"].isoformat(), 
+                        leave_time.isoformat()
+                    )
 
+                    # 알람 전송
                     alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) \
                                or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
                     
@@ -167,22 +215,26 @@ class VoiceTimeCog(commands.Cog):
         header_text: str = "",
         chunk_size: int = 40,
     ):
+        """멘션이 많을 경우 2000자 제한을 피하기 위해 나누어 전송합니다."""
         for i in range(0, len(members_to_ping), chunk_size):
             chunk = members_to_ping[i : i + chunk_size]
             mention_list = " ".join(m.mention for m in chunk)
             text = f"{mention_list}\n{header_text}" if header_text else mention_list
             await report_ch.send(text)
 
+    # 주간 리포트 (일요일 밤 11시 KST = 14:00 UTC)
     @tasks.loop(time=dt.time(hour=14, minute=0, tzinfo=dt.timezone.utc))
     async def daily_reporter(self):
         now = now_kst()
-        if now.weekday() != 6:
+        if now.weekday() != 6: # 일요일이 아니면 종료
             return
 
+        # 현재 진행 중인 세션이 있다면 임시 합산
         for uid in list(self.store.state["sessions"].keys()):
             self.store.add_session_time(int(uid), until=now)
             self.store.state["sessions"][uid] = iso(now)
 
+        # 리포트 생성
         if not self.store.state["totals"]:
             content = "이번 주 대상 음성 채널 체류 기록이 없습니다."
         else:
@@ -193,6 +245,7 @@ class VoiceTimeCog(commands.Cog):
                 lines.append(f"- <@{uid}>: {hours:.2f}h")
             content = "\n".join(lines)
 
+        # 리포트 전송 및 데이터 초기화
         channel = self.bot.get_channel(REPORT_CHANNEL_ID_ENTER) \
             or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ENTER)
         try:
@@ -201,6 +254,7 @@ class VoiceTimeCog(commands.Cog):
             self.store.state["totals"] = {}
             self.store.save()
 
+    # 누적 시간 수동 확인 명령어 (관리자 전용)
     @commands.command()
     @commands.has_permissions(administrator=True)
     async def voicetime(self, ctx: commands.Context):
@@ -208,12 +262,11 @@ class VoiceTimeCog(commands.Cog):
             await ctx.send("현재 누적 데이터가 없습니다.")
             return
         items = sorted(self.store.state["totals"].items(), key=lambda kv: kv[1], reverse=True)
-        lines = []
+        lines = ["현재 누적 음성 채널 체류 시간:"]
         for uid, sec in items:
             hours = sec / 3600.0
             lines.append(f"<@{uid}>: {hours:.2f}h")
         await ctx.send("\n".join(lines))
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(VoiceTimeCog(bot))
