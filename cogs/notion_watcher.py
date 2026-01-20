@@ -58,6 +58,11 @@ class NotionWatcherCog(commands.Cog):
         if not os.path.exists(self.db_file):
             print(f"[NOTION] {self.db_file} 파일이 없어 새로 시작합니다.")
             return
+        
+        if os.path.getsize(self.db_file) == 0:
+            print(f"[NOTION] {self.db_file} 파일이 비어 있어 초기화를 건너뜁니다.")
+            return
+
         try:
             with open(self.db_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -66,7 +71,7 @@ class NotionWatcherCog(commands.Cog):
                 self.last_board_row_ids = set(data.get("boards", []))
                 self.last_schedule_row_ids = set(data.get("schedules", []))
             print(f"[NOTION] {self.db_file} 로드 완료.")
-        except Exception as e:
+        except (json.JSONDecodeError, Exception) as e:
             print(f"[NOTION] 로드 중 오류: {e}")
 
     def save_state(self):
@@ -92,6 +97,23 @@ class NotionWatcherCog(commands.Cog):
     def cog_unload(self) -> None:
         if self.notion_update_poller.is_running():
             self.notion_update_poller.cancel()
+
+    # [추가] 긴 메시지를 2000자 이하로 나누어 전송하는 함수
+    async def _send_long_message(self, channel, header, lines):
+        """긴 메시지를 2000자 이하로 나누어 전송합니다."""
+        if not lines:
+            return
+            
+        current_message = header + "\n" if header else ""
+        for line in lines:
+            # 새로운 라인을 추가했을 때 1900자를 넘으면 전송
+            if len(current_message) + len(line) + 1 > 1900:
+                await channel.send(current_message)
+                current_message = ""
+            current_message += line + "\n"
+        
+        if current_message:
+            await channel.send(current_message)
 
     async def _fetch_notion_db(self, session: aiohttp.ClientSession, db_id: str) -> List[Dict[str, Any]]:
         clean_db_id = _clean_env(db_id)
@@ -148,7 +170,6 @@ class NotionWatcherCog(commands.Cog):
 
                 for row in results:
                     props = row.get("properties", {})
-                    
                     date_prop = props.get("날짜", {})
                     if not date_prop: continue
                     date_data = date_prop.get("date", {})
@@ -197,7 +218,6 @@ class NotionWatcherCog(commands.Cog):
                         if target_member:
                             current_data = new_schedules.get(target_member.id)
                             if not current_data or end_dt > current_data["end"]:
-                                # 수정에 필요한 정보(end, page_id, start)를 저장합니다.
                                 new_schedules[target_member.id] = {
                                     "end": end_dt,
                                     "page_id": row["id"],
@@ -265,6 +285,7 @@ class NotionWatcherCog(commands.Cog):
                             if status_names: self.last_feature_status_by_id[rid] = ",".join(status_names)
 
                         ch = self.bot.get_channel(REPORT_CHANNEL_ID_FEATURE) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_FEATURE)
+                        # [수정] self._send_long_message 사용
                         if new_req: await self._send_long_message(ch, "기능 요청이 들어왔습니다 ✨", new_req)
                         if new_comp: await self._send_long_message(ch, "기능이 추가됐습니다 ✅", new_comp)
 
@@ -306,7 +327,8 @@ class NotionWatcherCog(commands.Cog):
 
                     if st_change:
                         ch = self.bot.get_channel(REPORT_CHANNEL_ID_FEATURE) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_FEATURE)
-                        await ch.send("\n".join(["기능이 추가됐습니다 ✅"] + st_change))
+                        # [수정] self._send_long_message 사용
+                        await self._send_long_message(ch, "기능이 추가됐습니다 ✅", st_change)
                     
                     if only_new or st_change or (new_row_ids != self.last_notion_row_ids):
                         self.last_notion_row_ids = new_row_ids
@@ -359,6 +381,7 @@ class NotionWatcherCog(commands.Cog):
                                 lines.append(f"- {t_str} — {d_str}" if d_str else f"- {t_str}")
 
                             ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
+                            # [수정] self._send_long_message 사용
                             await self._send_long_message(ch, "", lines)
                             
                         self.last_schedule_row_ids = ids
@@ -369,16 +392,3 @@ class NotionWatcherCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(NotionWatcherCog(bot))
-
-async def _send_long_message(self, channel, header, lines):
-    """긴 메시지를 2000자 이하로 나누어 전송합니다."""
-    current_message = header + "\n"
-    for line in lines:
-        # 새로운 라인을 추가했을 때 1900자를 넘으면 일단 전송 (여유분 포함)
-        if len(current_message) + len(line) > 1900:
-            await channel.send(current_message)
-            current_message = "" 
-        current_message += line + "\n"
-    
-    if current_message:
-        await channel.send(current_message)
