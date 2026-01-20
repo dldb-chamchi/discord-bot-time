@@ -110,12 +110,10 @@ class NotionWatcherCog(commands.Cog):
                 return data.get("results", [])
         except Exception: return []
 
-    # [핵심] 닉네임 매핑 및 스케줄 업데이트
     async def _update_active_schedules(self, session: aiohttp.ClientSession):
         if not NOTION_DATABASE_SCHEDULE_ID:
             return
 
-        # [설정] 노션 이름 -> 디스코드 닉네임 변환 사전
         NAME_MAPPING = {
             "임아리": "이유",
             "김성아": "SAK",
@@ -130,7 +128,6 @@ class NotionWatcherCog(commands.Cog):
             "Notion-Version": "2022-06-28",
             "Content-Type": "application/json"
         }
-        # 필터: 날짜가 오늘 이후이거나 오늘인 것
         payload = {
             "filter": {
                 "property": "날짜",
@@ -152,7 +149,6 @@ class NotionWatcherCog(commands.Cog):
                 for row in results:
                     props = row.get("properties", {})
                     
-                    # 날짜 파싱
                     date_prop = props.get("날짜", {})
                     if not date_prop: continue
                     date_data = date_prop.get("date", {})
@@ -169,7 +165,6 @@ class NotionWatcherCog(commands.Cog):
 
                     if end_dt < now: continue
 
-                    # 태그(이름) 파싱 및 매핑 적용
                     tag_prop = props.get("태그", {})
                     raw_names = []
                     if tag_prop.get("type") == "multi_select":
@@ -178,18 +173,14 @@ class NotionWatcherCog(commands.Cog):
                     if not raw_names: continue
 
                     for raw_name in raw_names:
-                        # 매핑 테이블 적용 (A -> 이유)
                         target_name = NAME_MAPPING.get(raw_name, raw_name)
-                        
                         target_member = None
                         clean_target = target_name.replace(" ", "").lower()
                         
                         for guild in self.bot.guilds:
-                            # 1. 정확한 닉네임/이름 검색
                             found = get(guild.members, display_name=target_name) or \
                                     get(guild.members, name=target_name)
                             
-                            # 2. 없으면 소문자/공백제거 후 검색
                             if not found:
                                 for m in guild.members:
                                     if m.bot: continue
@@ -204,9 +195,14 @@ class NotionWatcherCog(commands.Cog):
                                 break
                         
                         if target_member:
-                            current_end = new_schedules.get(target_member.id)
-                            if not current_end or end_dt > current_end:
-                                new_schedules[target_member.id] = end_dt
+                            current_data = new_schedules.get(target_member.id)
+                            if not current_data or end_dt > current_data["end"]:
+                                # 수정에 필요한 정보(end, page_id, start)를 저장합니다.
+                                new_schedules[target_member.id] = {
+                                    "end": end_dt,
+                                    "page_id": row["id"],
+                                    "start": date_data.get("start")
+                                }
 
                 self.bot.active_schedules = new_schedules
 
@@ -218,10 +214,8 @@ class NotionWatcherCog(commands.Cog):
         if not NOTION_TOKEN: return
         try:
             async with aiohttp.ClientSession() as session:
-                # [추가] 스케줄 업데이트 호출
                 await self._update_active_schedules(session)
 
-                # Feature DB
                 if NOTION_DATABASE_FEATURE_ID:
                     rows = await self._fetch_notion_db(session, NOTION_DATABASE_FEATURE_ID)
                     new_row_ids = {row["id"] for row in rows}
@@ -271,8 +265,8 @@ class NotionWatcherCog(commands.Cog):
                             if status_names: self.last_feature_status_by_id[rid] = ",".join(status_names)
 
                         ch = self.bot.get_channel(REPORT_CHANNEL_ID_FEATURE) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_FEATURE)
-                        if new_req: await ch.send("\n".join(["기능 요청이 들어왔습니다 ✨"] + new_req))
-                        if new_comp: await ch.send("\n".join(["기능이 추가됐습니다 ✅"] + new_comp))
+                        if new_req: await self._send_long_message(ch, "기능 요청이 들어왔습니다 ✨", new_req)
+                        if new_comp: await self._send_long_message(ch, "기능이 추가됐습니다 ✅", new_comp)
 
                     st_change = []
                     for row in rows:
@@ -318,7 +312,6 @@ class NotionWatcherCog(commands.Cog):
                         self.last_notion_row_ids = new_row_ids
                         self.save_state()
 
-                # Board DB
                 if NOTION_DATABASE_BOARD_ID and REPORT_CHANNEL_ID_ALARM:
                     rows = await self._fetch_notion_db(session, NOTION_DATABASE_BOARD_ID)
                     ids = {r["id"] for r in rows}
@@ -329,7 +322,6 @@ class NotionWatcherCog(commands.Cog):
                         self.last_board_row_ids = ids
                         self.save_state()
 
-                # Schedule DB (기존 새 일정 알림용)
                 if NOTION_DATABASE_SCHEDULE_ID and REPORT_CHANNEL_ID_ALARM:
                     rows = await self._fetch_notion_db(session, NOTION_DATABASE_SCHEDULE_ID)
                     ids = {r["id"] for r in rows}
@@ -367,7 +359,7 @@ class NotionWatcherCog(commands.Cog):
                                 lines.append(f"- {t_str} — {d_str}" if d_str else f"- {t_str}")
 
                             ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
-                            await ch.send("\n".join(lines))
+                            await self._send_long_message(ch, "", lines)
                             
                         self.last_schedule_row_ids = ids
                         self.save_state()
@@ -377,3 +369,16 @@ class NotionWatcherCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(NotionWatcherCog(bot))
+
+async def _send_long_message(self, channel, header, lines):
+    """긴 메시지를 2000자 이하로 나누어 전송합니다."""
+    current_message = header + "\n"
+    for line in lines:
+        # 새로운 라인을 추가했을 때 1900자를 넘으면 일단 전송 (여유분 포함)
+        if len(current_message) + len(line) > 1900:
+            await channel.send(current_message)
+            current_message = "" 
+        current_message += line + "\n"
+    
+    if current_message:
+        await channel.send(current_message)

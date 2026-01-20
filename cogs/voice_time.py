@@ -1,16 +1,23 @@
 # cogs/voice_time.py
 import datetime as dt
-import asyncio  # [추가] 딜레이 기능을 위해 필요
+import asyncio
+import aiohttp
 from typing import List
 
 import discord
 from discord.ext import commands, tasks
 
-from config import VOICE_CHANNEL_ID, REPORT_CHANNEL_ID_ENTER, DATA_FILE, REPORT_CHANNEL_ID_ALARM
+from config import (
+    VOICE_CHANNEL_ID, 
+    REPORT_CHANNEL_ID_ENTER, 
+    DATA_FILE, 
+    REPORT_CHANNEL_ID_ALARM,
+    NOTION_TOKEN 
+)
 from time_utils import now_kst, iso
 from state_store import StateStore
 
-COOLDOWN_SECONDS = 10 * 60  # 10분
+COOLDOWN_SECONDS = 10 * 60
 
 class VoiceTimeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -25,6 +32,32 @@ class VoiceTimeCog(commands.Cog):
 
     def cog_unload(self):
         self.daily_reporter.cancel()
+
+    # 노션 일정을 실제 퇴장 시간으로 업데이트하는 함수입니다.
+    async def _update_notion_end_time(self, page_id: str, start_iso: str, actual_leave_iso: str):
+        url = f"https://api.notion.com/v1/pages/{page_id}"
+        headers = {
+            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "properties": {
+                "날짜": {
+                    "date": {
+                        "start": start_iso,
+                        "end": actual_leave_iso
+                    }
+                }
+            }
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.patch(url, headers=headers, json=payload) as resp:
+                if resp.status == 200:
+                    print(f"[NOTION] 페이지 {page_id} 시간 업데이트 성공")
+                else:
+                    text = await resp.text()
+                    print(f"[NOTION] 업데이트 실패 ({resp.status}): {text}")
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -80,7 +113,7 @@ class VoiceTimeCog(commands.Cog):
 
         # 2. 퇴장 (Leave)
         if before_id == target_id and after_id != target_id:
-            # 세션 기록 저장
+            leave_time = now_kst() # 실제 나간 시간을 기록합니다.
             self.store.add_session_time(member.id)
             self.store.state["sessions"].pop(uid, None)
             self.store.save()
@@ -88,46 +121,43 @@ class VoiceTimeCog(commands.Cog):
             if before.channel and len([m for m in before.channel.members if not m.bot]) == 0:
                 self.channel_active = False
 
-            # [핵심] 30초 딜레이 후 알림 발송 로직
+            # 일정이 남았는지 확인하고 10분 대기 로직을 수행합니다.
             if hasattr(self.bot, 'active_schedules') and member.id in self.bot.active_schedules:
-                # 30초 대기
-                await asyncio.sleep(30)
+                # 10분(600초)을 기다립니다.
+                await asyncio.sleep(600)
 
-                # 30초 후 현재 상태 다시 확인 (유저가 다시 들어왔는지 체크)
-                # member 객체는 옛날 정보일 수 있으므로, 길드에서 최신 멤버 정보를 다시 가져옴
+                # 10분 후 현재 상태를 다시 확인합니다.
                 current_member = member.guild.get_member(member.id)
                 
-                # 유저가 서버를 나갔거나(None), 
-                # 음성 채널에 없거나, 
-                # 음성 채널에 있어도 우리 타겟 채널이 아니라면 -> 알림 발송 대상
                 is_back_in_channel = False
                 if current_member and current_member.voice and current_member.voice.channel:
                     if current_member.voice.channel.id == target_id:
                         is_back_in_channel = True
                 
-                # 이미 돌아왔다면 알림 취소
+                # 돌아왔다면 로직을 종료합니다.
                 if is_back_in_channel:
                     return
 
-                # 여전히 나가 있다면 일정 체크 후 알림
-                scheduled_end = self.bot.active_schedules[member.id]
-                now = now_kst()
+                # 아직 복귀하지 않았다면 노션 일정을 수정합니다.
+                sched_info = self.bot.active_schedules[member.id]
+                scheduled_end = sched_info["end"]
+                page_id = sched_info["page_id"]
+                start_time_iso = sched_info["start"]
                 
-                if now < scheduled_end:
-                    time_diff = scheduled_end - now
-                    minutes_left = int(time_diff.total_seconds() / 60)
+                if leave_time < scheduled_end:
+                    # 노션 종료 시간을 실제 퇴장 시간으로 변경합니다.
+                    leave_time_iso = leave_time.isoformat()
+                    await self._update_notion_end_time(page_id, start_time_iso, leave_time_iso)
+
+                    alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) \
+                               or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
                     
-                    if minutes_left > 1:
-                        alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) \
-                                   or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
-                        
-                        if alarm_ch:
-                            msg = (
-                                f"🚨 **{member.mention} 님, 어디 가시나요?**\n"
-                                f"아직 일정이 **{minutes_left}분** 남았습니다!\n"
-                                f"목표 시간: {scheduled_end.strftime('%H:%M')}"
-                            )
-                            await alarm_ch.send(msg)
+                    if alarm_ch:
+                        msg = (
+                            f"⚠️ **{member.mention} 님, 일정이 남았는데 10분간 돌아오지 않으셨습니다.**\n"
+                            f"노션의 일정을 실제 퇴장 시간({leave_time.strftime('%H:%M')})으로 수정하였습니다."
+                        )
+                        await alarm_ch.send(msg)
             return
 
     async def _send_mentions_in_chunks(
@@ -187,4 +217,3 @@ class VoiceTimeCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(VoiceTimeCog(bot))
-    
