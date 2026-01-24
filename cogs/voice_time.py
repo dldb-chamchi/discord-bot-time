@@ -123,7 +123,7 @@ class VoiceTimeCog(commands.Cog):
         if before_id == target_id and after_id != target_id:
             leave_time = now_kst()
             
-            # [추가] 칭찬용 세션 시간 계산
+            # 칭찬용 세션 시간 계산
             start_iso = self.store.state["sessions"].get(uid)
             session_seconds = 0
             if start_iso:
@@ -141,7 +141,6 @@ class VoiceTimeCog(commands.Cog):
 
             # --- [기능 1] 목표 초과 달성 칭찬 로직 ---
             if hasattr(self.bot, 'active_schedules') and member.id in self.bot.active_schedules:
-                # 오늘 이미 칭찬받았는지 체크
                 today = leave_time.date()
                 if not hasattr(self.bot, 'last_praise_date') or self.bot.last_praise_date != today:
                     self.bot.praised_today = set()
@@ -151,7 +150,6 @@ class VoiceTimeCog(commands.Cog):
                 planned_start = sched_info["start"]
                 planned_end = sched_info["end"]
                 
-                # 계획된 총 시간과 오늘 총 누적 시간 비교
                 planned_seconds = int((planned_end - planned_start).total_seconds())
                 total_seconds = self.store.state["totals"].get(uid, 0)
 
@@ -167,42 +165,75 @@ class VoiceTimeCog(commands.Cog):
                         )
                         self.bot.praised_today.add(member.id)
 
-            # --- [기능 2] 조기 퇴장 및 10분 미복귀 알람 로직 ---
+            # --- [기능 2] 조기 퇴장 감지 프로세스 (1단계: 경고 -> 2단계: 처분) ---
             if hasattr(self.bot, 'active_schedules') and member.id in self.bot.active_schedules:
-                # 10분 대기
-                await asyncio.sleep(600)
+                # ---------------------------------------------------------
+                # [단계 1] 60초 경고 알림 로직 (추가된 기능)
+                # ---------------------------------------------------------
+                await asyncio.sleep(60) # 60초 대기
 
-                # 10분 후 복귀 여부 확인
+                # 1. 60초 후 복귀 여부 확인
                 current_member = member.guild.get_member(member.id)
                 is_back = False
                 if current_member and current_member.voice and current_member.voice.channel:
                     if current_member.voice.channel.id == target_id:
                         is_back = True
                 
-                # 돌아왔다면 알람 및 업데이트 취소
+                # 돌아왔다면 전체 로직 종료
                 if is_back:
                     return
 
-                # 돌아오지 않았다면 일정 정보 확인
+                # 아직 안 돌아왔다면 경고 메시지 전송
                 sched_info = self.bot.active_schedules[member.id]
                 scheduled_end = sched_info["end"]
+                now = now_kst()
+
+                if now < scheduled_end:
+                    time_diff = scheduled_end - now
+                    minutes_left = int(time_diff.total_seconds() / 60)
+                    
+                    if minutes_left > 1:
+                        alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) \
+                                   or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
+                        if alarm_ch:
+                            msg = (
+                                f"🚨 **{member.mention} 님, 어디 가시나요?**\n"
+                                f"아직 일정이 **{minutes_left}분** 남았습니다! 얼른 돌아오세요!\n"
+                                f"목표 시간: {scheduled_end.strftime('%H:%M')}"
+                            )
+                            await alarm_ch.send(msg)
+
+                # ---------------------------------------------------------
+                # [단계 2] 10분 미복귀 시 노션 수정 로직 (기존 기능)
+                # ---------------------------------------------------------
+                # 이미 60초를 기다렸으므로, 나머지 9분(540초)만 더 기다립니다.
+                await asyncio.sleep(540) 
+
+                # 2. 총 10분 후 복귀 여부 재확인
+                current_member = member.guild.get_member(member.id)
+                is_back_final = False
+                if current_member and current_member.voice and current_member.voice.channel:
+                    if current_member.voice.channel.id == target_id:
+                        is_back_final = True
                 
-                # 예정된 시간보다 일찍 나갔을 때만 작동
+                # 돌아왔다면 종료
+                if is_back_final:
+                    return
+
+                # 여전히 돌아오지 않았다면 -> 노션 일정 수정 및 최종 알림
                 if leave_time < scheduled_end:
-                    # 노션 업데이트 (시작 시간은 유지, 종료 시간은 실제 퇴장 시간으로)
+                    # 노션 업데이트 (종료 시간을 퇴장했던 시간으로 수정)
                     await self._update_notion_end_time(
                         sched_info["page_id"], 
                         sched_info["start"].isoformat(), 
                         leave_time.isoformat()
                     )
 
-                    # 알람 전송
                     alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) \
                                or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
-                    
                     if alarm_ch:
                         msg = (
-                            f"⚠️ **{member.mention} 님, 일정이 남았는데 10분간 돌아오지 않으셨습니다.**\n"
+                            f"⚠️ **{member.mention} 님, 10분 넘게 돌아오지 않으셨습니다.**\n"
                             f"노션의 일정을 실제 퇴장 시간({leave_time.strftime('%H:%M')})으로 수정하였습니다."
                         )
                         await alarm_ch.send(msg)
