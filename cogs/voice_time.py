@@ -100,13 +100,9 @@ class VoiceTimeCog(commands.Cog):
             leave_time = now_kst()
             print(f"[DEBUG] 퇴장 감지: {member.display_name}")
 
-            # 세션 처리
-            start_iso = self.store.state["sessions"].get(uid)
-            session_seconds = 0
-            if start_iso:
-                start_dt = dt.datetime.fromisoformat(start_iso)
-                session_seconds = int((leave_time - start_dt).total_seconds())
-            self.store.add_session_time(member.id)
+            # 세션 처리 및 누적
+            # add_session_time이 방금 공부한 초(sec)를 반환하도록 state_store.py를 수정했으므로 활용
+            session_seconds = self.store.add_session_time(member.id)
             self.store.state["sessions"].pop(uid, None)
             self.store.save()
 
@@ -118,39 +114,52 @@ class VoiceTimeCog(commands.Cog):
             is_target = has_schedules and (member.id in self.bot.active_schedules)
             
             if not has_schedules:
-                print("[DEBUG] ❌ bot.active_schedules 속성이 없습니다. (NotionWatcher 로드 문제)")
+                print("[DEBUG] ❌ bot.active_schedules 속성이 없습니다.")
             elif not is_target:
                 print(f"[DEBUG] ❌ {member.display_name} 님은 현재 일정 대상자가 아닙니다.")
-                print(f"[DEBUG] 현재 인식된 일정 대상자 ID 목록: {list(self.bot.active_schedules.keys())}")
             else:
-                print(f"[DEBUG] ✅ {member.display_name} 님의 일정이 확인되었습니다. 감시 프로세스 시작.")
+                print(f"[DEBUG] ✅ {member.display_name} 님의 일정이 확인되었습니다.")
 
-            # --- [기능 1] 목표 초과 달성 칭찬 로직 (복구됨) ---
+            # --- [기능 1] (수정됨) 일정별 목표 달성 칭찬 로직 ---
             if is_target:
-                today = leave_time.date()
-                if not hasattr(self.bot, 'last_praise_date') or self.bot.last_praise_date != today:
-                    self.bot.praised_today = set()
-                    self.bot.last_praise_date = today
-
                 sched_info = self.bot.active_schedules[member.id]
+                page_id = sched_info["page_id"]
+                
+                # 1. 이 일정(Page ID)에 대한 누적 시간 업데이트
+                current_prog = self.store.state["schedule_progress"].get(page_id, 0)
+                current_prog += session_seconds
+                self.store.state["schedule_progress"][page_id] = current_prog
+                self.store.save()
+
+                # 2. 목표 시간 계산
                 planned_start = sched_info["start"]
                 planned_end = sched_info["end"]
-                
                 planned_seconds = int((planned_end - planned_start).total_seconds())
-                total_seconds = self.store.state["totals"].get(uid, 0)
 
-                if total_seconds > planned_seconds and member.id not in self.bot.praised_today:
-                    print(f"[DEBUG] 칭찬 조건 달성! 메시지 전송 시도.")
-                    praise_ch = self.bot.get_channel(REPORT_CHANNEL_ID_DAILY) or \
-                                await self.bot.fetch_channel(REPORT_CHANNEL_ID_DAILY)
-                    if praise_ch:
-                        over_time_min = (total_seconds - planned_seconds) // 60
-                        await praise_ch.send(
-                            f"🎊 **{member.mention} 님, 정말 대단해요!**\n"
-                            f"오늘 계획했던 시간보다 **{over_time_min}분**이나 더 공부하셨습니다! 🏆\n"
-                            f"목표를 초과 달성하신 당신을 응원합니다! 👏👏👏"
-                        )
-                        self.bot.praised_today.add(member.id)
+                print(f"[DEBUG] 일정({page_id[:4]}..) 누적: {current_prog}s / 목표: {planned_seconds}s")
+
+                # 3. 칭찬 조건 확인 (누적 >= 목표) AND (아직 칭찬 안 받음)
+                if current_prog >= planned_seconds:
+                    if page_id not in self.store.state["praised_pages"]:
+                        print(f"[DEBUG] 🎯 목표 달성! 칭찬 메시지 전송.")
+                        
+                        praise_ch = self.bot.get_channel(REPORT_CHANNEL_ID_DAILY) or \
+                                    await self.bot.fetch_channel(REPORT_CHANNEL_ID_DAILY)
+                        
+                        if praise_ch:
+                            over_time_min = (current_prog - planned_seconds) // 60
+                            over_time_min = max(0, over_time_min)
+
+                            await praise_ch.send(
+                                f"🎊 **{member.mention} 님, 정말 대단해요!**\n"
+                                f"오늘 계획했던 시간보다 {over_time_min}분이나 더 공부하셨습니다! 🏆\n"
+                                f"앞으로도 파이팅! 👏👏👏"
+                            )
+                            # 칭찬 완료 처리 (이 일정 ID에 대해서는 다시 칭찬 안 함)
+                            self.store.state["praised_pages"].append(page_id)
+                            self.store.save()
+                    else:
+                        print(f"[DEBUG] 이미 칭찬받은 일정입니다.")
 
             # --- [기능 2] 조기 퇴장 감지 프로세스 ---
             if is_target:
@@ -172,7 +181,7 @@ class VoiceTimeCog(commands.Cog):
                     print(f"[DEBUG] 1분 내 복귀 확인됨. 알람 취소.")
                     return
 
-                # 미복귀 시 1차 알람
+                # 미복귀 시 1차 알람 (CHASE 채널)
                 now = now_kst()
                 if now < scheduled_end:
                     time_diff = scheduled_end - now
@@ -204,7 +213,7 @@ class VoiceTimeCog(commands.Cog):
                     print(f"[DEBUG] 10분 내 복귀 확인됨. 수정 취소.")
                     return
 
-                # 최종 미복귀 처리
+                # 최종 미복귀 처리 (ALARM 채널)
                 if leave_time < scheduled_end:
                     print(f"[DEBUG] 10분 미복귀. 노션 수정 및 알람.")
                     await self._update_notion_end_time(sched_info["page_id"], sched_info["start"].isoformat(), leave_time.isoformat())
