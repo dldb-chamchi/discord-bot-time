@@ -119,18 +119,39 @@ class VoiceTimeCog(commands.Cog):
             if not has_schedules:
                 print("[DEBUG] ❌ bot.active_schedules 속성이 없습니다. (NotionWatcher 로드 문제)")
             elif not is_target:
-                # 현재 로드된 일정 대상자 목록 출력
                 print(f"[DEBUG] ❌ {member.display_name} 님은 현재 일정 대상자가 아닙니다.")
                 print(f"[DEBUG] 현재 인식된 일정 대상자 ID 목록: {list(self.bot.active_schedules.keys())}")
             else:
                 print(f"[DEBUG] ✅ {member.display_name} 님의 일정이 확인되었습니다. 감시 프로세스 시작.")
 
-            # --- [기능 1] 목표 초과 달성 칭찬 ---
+            # --- [기능 1] 목표 초과 달성 칭찬 로직 (복구됨) ---
             if is_target:
-                # (기존 칭찬 로직 유지)
-                pass 
+                today = leave_time.date()
+                if not hasattr(self.bot, 'last_praise_date') or self.bot.last_praise_date != today:
+                    self.bot.praised_today = set()
+                    self.bot.last_praise_date = today
 
-            # --- [기능 2] 조기 퇴장 감지 프로세스 (수정됨) ---
+                sched_info = self.bot.active_schedules[member.id]
+                planned_start = sched_info["start"]
+                planned_end = sched_info["end"]
+                
+                planned_seconds = int((planned_end - planned_start).total_seconds())
+                total_seconds = self.store.state["totals"].get(uid, 0)
+
+                if total_seconds > planned_seconds and member.id not in self.bot.praised_today:
+                    print(f"[DEBUG] 칭찬 조건 달성! 메시지 전송 시도.")
+                    praise_ch = self.bot.get_channel(REPORT_CHANNEL_ID_DAILY) or \
+                                await self.bot.fetch_channel(REPORT_CHANNEL_ID_DAILY)
+                    if praise_ch:
+                        over_time_min = (total_seconds - planned_seconds) // 60
+                        await praise_ch.send(
+                            f"🎊 **{member.mention} 님, 정말 대단해요!**\n"
+                            f"오늘 계획했던 시간보다 **{over_time_min}분**이나 더 공부하셨습니다! 🏆\n"
+                            f"목표를 초과 달성하신 당신을 응원합니다! 👏👏👏"
+                        )
+                        self.bot.praised_today.add(member.id)
+
+            # --- [기능 2] 조기 퇴장 감지 프로세스 ---
             if is_target:
                 sched_info = self.bot.active_schedules[member.id]
                 scheduled_end = sched_info["end"]
