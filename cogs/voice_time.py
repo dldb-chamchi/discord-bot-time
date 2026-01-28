@@ -13,6 +13,7 @@ from config import (
     DATA_FILE, 
     REPORT_CHANNEL_ID_ALARM,
     REPORT_CHANNEL_ID_DAILY,
+    REPORT_CHANNEL_ID_CHASE,
     NOTION_TOKEN 
 )
 from time_utils import now_kst, iso, KST
@@ -179,7 +180,7 @@ class VoiceTimeCog(commands.Cog):
                     
                     if minutes_left > 1:
                         print(f"[DEBUG] 1분 미복귀 알람 전송")
-                        alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
+                        alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_CHASE) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_CHASE)
                         if alarm_ch:
                             msg = (
                                 f"🚨 **{member.mention} 님, 어디 가시나요?**\n"
@@ -208,7 +209,7 @@ class VoiceTimeCog(commands.Cog):
                     print(f"[DEBUG] 10분 미복귀. 노션 수정 및 알람.")
                     await self._update_notion_end_time(sched_info["page_id"], sched_info["start"].isoformat(), leave_time.isoformat())
 
-                    alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
+                    alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_CHASE) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_CHASE)
                     if alarm_ch:
                         msg = (
                             f"⚠️ **{member.mention} 님, 10분 넘게 돌아오지 않으셨습니다.**\n"
