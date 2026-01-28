@@ -16,6 +16,7 @@ from config import (
     NOTION_DATABASE_SCHEDULE_ID,
     REPORT_CHANNEL_ID_FEATURE,
     REPORT_CHANNEL_ID_ALARM,
+    VOICE_CHANNEL_ID, # [추가] 공부 채널 ID 필요
 )
 from time_utils import now_kst, KST
 
@@ -94,7 +95,6 @@ class NotionWatcherCog(commands.Cog):
             self.notion_update_poller.cancel()
 
     async def _send_long_message(self, channel, header, lines):
-        """긴 메시지를 2000자 이하로 나누어 전송합니다."""
         if not lines: return
         current_message = (header + "\n") if header else ""
         for line in lines:
@@ -155,20 +155,46 @@ class NotionWatcherCog(commands.Cog):
                         if end_dt.tzinfo is None: end_dt = end_dt.replace(tzinfo=KST)
                     except: continue
 
-                    if end_dt < now: continue
-
+                    # [수정됨] 디스코드 멤버 찾기를 시간 체크보다 먼저 수행
                     raw_names = [opt["name"] for opt in props.get("태그", {}).get("multi_select", [])]
+                    target_member = None
+                    target_notion_name = ""
+
                     for raw_name in raw_names:
                         target_name = NAME_MAPPING.get(raw_name, raw_name)
                         for guild in self.bot.guilds:
                             member = get(guild.members, display_name=target_name) or get(guild.members, name=target_name)
                             if member:
-                                new_schedules[member.id] = {
-                                    "end": end_dt,
-                                    "page_id": row["id"],
-                                    "start": start_dt
-                                }
+                                target_member = member
+                                target_notion_name = raw_name
                                 break
+                        if target_member: break
+                    
+                    if not target_member:
+                        continue
+
+                    # [수정됨] 유지 조건 확인
+                    # 1. 시간이 아직 안 끝났거나, 끝난지 30분 이내 (여유 시간)
+                    buffer_time = dt.timedelta(minutes=30)
+                    is_time_remaining = (end_dt + buffer_time) >= now
+                    
+                    # 2. 시간은 지났지만 현재 공부 채널에 접속 중임 (초과 달성 중)
+                    is_in_voice = False
+                    if target_member.voice and target_member.voice.channel and target_member.voice.channel.id == VOICE_CHANNEL_ID:
+                        is_in_voice = True
+
+                    # 시작은 했어야 함
+                    is_started = now >= start_dt
+
+                    # (시작됨) AND (시간남음 OR 공부중) 이면 삭제하지 않고 유지
+                    if is_started and (is_time_remaining or is_in_voice):
+                        new_schedules[target_member.id] = {
+                            "end": end_dt,
+                            "page_id": row["id"],
+                            "start": start_dt,
+                            "name": target_notion_name
+                        }
+                    
                 self.bot.active_schedules = new_schedules
         except Exception as e:
             print(f"[NOTION] Schedule Update Error: {e}")
@@ -178,27 +204,23 @@ class NotionWatcherCog(commands.Cog):
         if not NOTION_TOKEN: return
         try:
             async with aiohttp.ClientSession() as session:
-                # 1. 스케줄 업데이트 (칭찬/퇴장 수정용 데이터 갱신)
                 await self._update_active_schedules(session)
 
-                # 2. FEATURE DB (기능 요청 및 상태 변경)
                 if NOTION_DATABASE_FEATURE_ID:
                     rows = await self._fetch_notion_db(session, NOTION_DATABASE_FEATURE_ID)
                     new_row_ids = {row["id"] for row in rows}
                     only_new = new_row_ids - self.last_notion_row_ids
                     
                     if only_new:
-                        await asyncio.sleep(20) # 20초 대기 후 데이터 재조회
+                        await asyncio.sleep(20)
                         rows = await self._fetch_notion_db(session, NOTION_DATABASE_FEATURE_ID)
 
-                    # 신규 행 처리
                     if only_new:
                         new_req, new_comp = [], []
                         for row in rows:
                             if row["id"] not in only_new: continue
                             props = row.get("properties", {})
                             status_names = []
-                            # 상태 파싱 (생략됨 - 헬퍼 함수 활용 가능)
                             st = props.get("상태") or next((v for v in props.values() if isinstance(v, dict) and v.get("type") in ("status", "select", "multi_select")), None)
                             if st:
                                 if st["type"] == "status": status_names.append(st["status"]["name"])
@@ -217,11 +239,9 @@ class NotionWatcherCog(commands.Cog):
                         await self._send_long_message(ch, "기능 요청이 들어왔습니다 ✨", new_req)
                         await self._send_long_message(ch, "기능이 추가됐습니다 ✅", new_comp)
 
-                    # 상태 변경 감지 (진행중 -> 완료)
                     st_change = []
                     for row in rows:
                         props = row.get("properties", {})
-                        # 상태 파싱 (위와 동일)
                         status_names = []
                         st = props.get("상태") or next((v for v in props.values() if isinstance(v, dict) and v.get("type") in ("status", "select", "multi_select")), None)
                         if st:
@@ -246,7 +266,6 @@ class NotionWatcherCog(commands.Cog):
                     self.last_notion_row_ids = new_row_ids
                     self.save_state()
 
-                # 3. BOARD DB (게시판 새 글)
                 if NOTION_DATABASE_BOARD_ID and REPORT_CHANNEL_ID_ALARM:
                     rows = await self._fetch_notion_db(session, NOTION_DATABASE_BOARD_ID)
                     ids = {r["id"] for r in rows}
@@ -256,7 +275,6 @@ class NotionWatcherCog(commands.Cog):
                         self.last_board_row_ids = ids
                         self.save_state()
 
-                # 4. SCHEDULE DB (새 일정 등록 알림)
                 if NOTION_DATABASE_SCHEDULE_ID and REPORT_CHANNEL_ID_ALARM:
                     rows = await self._fetch_notion_db(session, NOTION_DATABASE_SCHEDULE_ID)
                     ids = {r["id"] for r in rows}
