@@ -13,7 +13,7 @@ from config import (
     DATA_FILE, 
     REPORT_CHANNEL_ID_ALARM,
     REPORT_CHANNEL_ID_DAILY,
-    REPORT_CHANNEL_ID_CHASE,
+    REPORT_CHANNEL_ID_CHASE, 
     NOTION_TOKEN 
 )
 from time_utils import now_kst, iso, KST
@@ -101,7 +101,6 @@ class VoiceTimeCog(commands.Cog):
             print(f"[DEBUG] 퇴장 감지: {member.display_name}")
 
             # 세션 처리 및 누적
-            # add_session_time이 방금 공부한 초(sec)를 반환하도록 state_store.py를 수정했으므로 활용
             session_seconds = self.store.add_session_time(member.id)
             self.store.state["sessions"].pop(uid, None)
             self.store.save()
@@ -120,12 +119,12 @@ class VoiceTimeCog(commands.Cog):
             else:
                 print(f"[DEBUG] ✅ {member.display_name} 님의 일정이 확인되었습니다.")
 
-            # --- [기능 1] (수정됨) 일정별 목표 달성 칭찬 로직 ---
+            # --- [기능 1] 일정별 목표 달성 칭찬 로직 ---
             if is_target:
                 sched_info = self.bot.active_schedules[member.id]
                 page_id = sched_info["page_id"]
                 
-                # 1. 이 일정(Page ID)에 대한 누적 시간 업데이트
+                # 1. 누적 시간 업데이트
                 current_prog = self.store.state["schedule_progress"].get(page_id, 0)
                 current_prog += session_seconds
                 self.store.state["schedule_progress"][page_id] = current_prog
@@ -136,41 +135,35 @@ class VoiceTimeCog(commands.Cog):
                 planned_end = sched_info["end"]
                 planned_seconds = int((planned_end - planned_start).total_seconds())
 
-                print(f"[DEBUG] 일정({page_id[:4]}..) 누적: {current_prog}s / 목표: {planned_seconds}s")
+                print(f"[DEBUG] 일정 누적: {current_prog}s / 목표: {planned_seconds}s")
 
-                # 3. 칭찬 조건 확인 (누적 >= 목표) AND (아직 칭찬 안 받음)
+                # 3. 칭찬 조건 확인
                 if current_prog >= planned_seconds:
                     if page_id not in self.store.state["praised_pages"]:
                         print(f"[DEBUG] 🎯 목표 달성! 칭찬 메시지 전송.")
-                        
                         praise_ch = self.bot.get_channel(REPORT_CHANNEL_ID_DAILY) or \
                                     await self.bot.fetch_channel(REPORT_CHANNEL_ID_DAILY)
-                        
                         if praise_ch:
                             over_time_min = (current_prog - planned_seconds) // 60
                             over_time_min = max(0, over_time_min)
-
                             await praise_ch.send(
                                 f"🎊 **{member.mention} 님, 정말 대단해요!**\n"
-                                f"오늘 계획했던 시간보다 {over_time_min}분이나 더 공부하셨습니다! 🏆\n"
-                                f"앞으로도 파이팅! 👏👏👏"
+                                f"등록하신 일정의 목표 시간을 모두 채우셨군요! (추가 공부: **{over_time_min}분**) 🏆\n"
+                                f"성실한 당신을 응원합니다! 👏👏👏"
                             )
-                            # 칭찬 완료 처리 (이 일정 ID에 대해서는 다시 칭찬 안 함)
                             self.store.state["praised_pages"].append(page_id)
                             self.store.save()
-                    else:
-                        print(f"[DEBUG] 이미 칭찬받은 일정입니다.")
 
             # --- [기능 2] 조기 퇴장 감지 프로세스 ---
             if is_target:
                 sched_info = self.bot.active_schedules[member.id]
                 scheduled_end = sched_info["end"]
                 
-                # 1단계: 60초 대기 및 1차 경고
+                # 1단계: 60초 대기
                 print(f"[DEBUG] 1분 대기 시작...")
                 await asyncio.sleep(60)
 
-                # 복귀 확인 1
+                # 복귀 확인
                 current_member = member.guild.get_member(member.id)
                 is_back = False
                 if current_member and current_member.voice and current_member.voice.channel:
@@ -181,26 +174,52 @@ class VoiceTimeCog(commands.Cog):
                     print(f"[DEBUG] 1분 내 복귀 확인됨. 알람 취소.")
                     return
 
-                # 미복귀 시 1차 알람 (CHASE 채널)
+                # 미복귀 시 1차 알람
                 now = now_kst()
                 if now < scheduled_end:
                     time_diff = scheduled_end - now
                     minutes_left = int(time_diff.total_seconds() / 60)
                     
-                    if minutes_left > 1:
-                        print(f"[DEBUG] 1분 미복귀 알람 전송")
-                        alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_CHASE) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_CHASE)
-                        if alarm_ch:
-                            msg = (
-                                f"🚨 **{member.mention} 님, 어디 가시나요?**\n"
-                                f"아직 일정이 **{minutes_left}분** 남았습니다! 얼른 돌아오세요!\n"
-                                f"목표 시간: {scheduled_end.strftime('%H:%M')}"
-                            )
-                            await alarm_ch.send(msg)
+                    # [디버깅] 봇이 계산한 남은 시간을 무조건 출력
+                    print(f"[DEBUG] 시간 계산: 종료({scheduled_end.strftime('%H:%M')}) - 현재({now.strftime('%H:%M')}) = {minutes_left}분 남음")
+
+                    if minutes_left > -1:
+                        # [안전장치] CHASE ID가 0이거나 없으면 ALARM ID 사용
+                        target_ch_id = REPORT_CHANNEL_ID_CHASE
+                        
+                        # 여기서 ID가 무엇인지 이실직고하게 함
+                        print(f"[DEBUG] 로드된 CHASE 채널 ID: {target_ch_id}")
+
+                        if not target_ch_id or target_ch_id == 0:
+                             print(f"[DEBUG] ⚠️ CHASE ID 오류 -> ALARM ID({REPORT_CHANNEL_ID_ALARM}) 사용")
+                             target_ch_id = REPORT_CHANNEL_ID_ALARM
+
+                        print(f"[DEBUG] 1분 미복귀 알람 전송 시도. (최종 타겟 ID: {target_ch_id})")
+                        
+                        try:
+                            alarm_ch = self.bot.get_channel(target_ch_id) or await self.bot.fetch_channel(target_ch_id)
+                            
+                            if alarm_ch:
+                                print(f"[DEBUG] ✅ 채널 찾음: {alarm_ch.name} (ID: {alarm_ch.id}) -> 메시지 전송 중...")
+                                msg = (
+                                    f"🚨 **{member.mention} 님, 어디 가시나요?**\n"
+                                    f"아직 일정이 **{minutes_left}분** 남았습니다! 얼른 돌아오세요!\n"
+                                    f"목표 시간: {scheduled_end.strftime('%H:%M')}"
+                                )
+                                await alarm_ch.send(msg)
+                                print(f"[DEBUG] 📨 전송 완료.")
+                            else:
+                                print(f"[DEBUG] ❌ 채널을 찾을 수 없습니다. (ID: {target_ch_id}) - 봇 권한이나 ID를 확인하세요.")
+                        except Exception as e:
+                            print(f"[DEBUG] ❌ 알람 전송 중 에러 발생: {e}")
+                    else:
+                        print(f"[DEBUG] 남은 시간이 없어서 알람 생략.")
+                else:
+                    print(f"[DEBUG] 이미 일정 시간({scheduled_end.strftime('%H:%M')})이 지났습니다. (현재: {now.strftime('%H:%M')})")
                 
-                # 2단계: 나머지 9분 대기 및 최종 처분
+                # 2단계: 나머지 9분 대기
                 print(f"[DEBUG] 추가 9분 대기 시작...")
-                await asyncio.sleep(540) # 540초 = 9분
+                await asyncio.sleep(540) # 540초
 
                 # 복귀 확인 2
                 current_member = member.guild.get_member(member.id)
@@ -213,18 +232,26 @@ class VoiceTimeCog(commands.Cog):
                     print(f"[DEBUG] 10분 내 복귀 확인됨. 수정 취소.")
                     return
 
-                # 최종 미복귀 처리 (ALARM 채널)
+                # 최종 미복귀 처리
                 if leave_time < scheduled_end:
                     print(f"[DEBUG] 10분 미복귀. 노션 수정 및 알람.")
                     await self._update_notion_end_time(sched_info["page_id"], sched_info["start"].isoformat(), leave_time.isoformat())
 
-                    alarm_ch = self.bot.get_channel(REPORT_CHANNEL_ID_CHASE) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_CHASE)
-                    if alarm_ch:
-                        msg = (
-                            f"⚠️ **{member.mention} 님, 10분 넘게 돌아오지 않으셨습니다.**\n"
-                            f"노션의 일정을 실제 퇴장 시간({leave_time.strftime('%H:%M')})으로 수정하였습니다."
-                        )
-                        await alarm_ch.send(msg)
+                    # 여기도 안전장치 적용
+                    target_ch_id = REPORT_CHANNEL_ID_CHASE
+                    if not target_ch_id or target_ch_id == 0:
+                        target_ch_id = REPORT_CHANNEL_ID_ALARM
+                    
+                    try:
+                        alarm_ch = self.bot.get_channel(target_ch_id) or await self.bot.fetch_channel(target_ch_id)
+                        if alarm_ch:
+                            msg = (
+                                f"⚠️ **{member.mention} 님, 10분 넘게 돌아오지 않으셨습니다.**\n"
+                                f"노션의 일정을 실제 퇴장 시간({leave_time.strftime('%H:%M')})으로 수정하였습니다."
+                            )
+                            await alarm_ch.send(msg)
+                    except Exception as e:
+                        print(f"[DEBUG] 10분 알람 전송 실패: {e}")
             return
 
     async def _send_mentions_in_chunks(self, report_ch, members_to_ping, header_text="", chunk_size=40):
