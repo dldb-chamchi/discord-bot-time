@@ -13,20 +13,20 @@ services:
     labels:
       com.datadoghq.ad.logs: '[{"source": "python", "service": "discord-bot"}]'
 
-  datadog:
-    image: gcr.io/datadoghq/agent:7
-    container_name: datadog-agent
-    pid: host
-    env_file:
-      - .env
-    environment:
-      - DD_API_KEY=${DD_API_KEY}
-      - DD_SITE=us5.datadoghq.com
-      - DD_LOGS_ENABLED=true
-      - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
-      - DD_PROCESS_AGENT_ENABLED=true
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /proc/:/host/proc/:ro
-      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+  # datadog:
+  #   image: gcr.io/datadoghq/agent:7
+  #   container_name: datadog-agent
+  #   pid: host
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - DD_API_KEY=${DD_API_KEY}
+  #     - DD_SITE=us5.datadoghq.com
+  #     - DD_LOGS_ENABLED=true
+  #     - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
+  #     - DD_PROCESS_AGENT_ENABLED=true
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - /proc/:/host/proc/:ro
+  #     - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+  #     - /var/lib/docker/containers:/var/lib/docker/containers:ro
