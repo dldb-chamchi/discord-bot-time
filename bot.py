@@ -11,7 +11,6 @@ intents.members = True
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-bot.active_schedules = {}
 
 # [추가] 최신 커밋 정보를 가져오는 함수
 def get_git_commit_info():
