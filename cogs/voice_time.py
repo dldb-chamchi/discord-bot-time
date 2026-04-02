@@ -9,6 +9,7 @@ from discord.ext import commands, tasks
 from config import (
     VOICE_CHANNEL_ID,
     REPORT_CHANNEL_ID_ENTER,
+    REPORT_CHANNEL_ID_ALARM,
     DATA_FILE,
     NOTION_TOKEN,
     NOTION_DATABASE_SCHEDULE_ID,
@@ -42,6 +43,18 @@ class VoiceTimeCog(commands.Cog):
             if candidate in DISCORD_TO_NOTION_NAME:
                 return DISCORD_TO_NOTION_NAME[candidate]
         return member.display_name
+
+    async def _send_schedule_alert(self, notion_name: str, start_at: dt.datetime, end_at: dt.datetime):
+        if not REPORT_CHANNEL_ID_ALARM:
+            return
+
+        channel = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
+        line = (
+            f"{notion_name} — "
+            f"{start_at.astimezone(KST).strftime('%Y-%m-%d %H:%M')} ~ "
+            f"{end_at.astimezone(KST).strftime('%Y-%m-%d %H:%M')}"
+        )
+        await channel.send(f"새 일정이 등록되었습니다 📅\n{line}")
 
     async def _create_notion_voice_record(self, member: discord.Member, start_at: dt.datetime, end_at: dt.datetime):
         if not NOTION_TOKEN or not NOTION_DATABASE_SCHEDULE_ID:
@@ -83,6 +96,7 @@ class VoiceTimeCog(commands.Cog):
                 async with session.post(url, headers=headers, json=payload) as resp:
                     if resp.status in (200, 201):
                         print(f"[NOTION] 음성 기록 생성 성공: {member.display_name}")
+                        await self._send_schedule_alert(notion_name, start_at, end_at)
                     else:
                         text = await resp.text()
                         print(f"[NOTION] 음성 기록 생성 실패 ({resp.status}): {text}")

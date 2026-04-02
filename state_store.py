@@ -2,6 +2,7 @@
 import os
 import json
 import datetime as dt
+import tempfile
 from typing import Dict, Any
 
 from time_utils import now_kst, parse_iso, iso
@@ -29,8 +30,19 @@ class StateStore:
                 pass
 
     def save(self):
-        with open(self.data_file, "w", encoding="utf-8") as f:
-            json.dump(self.state, f, ensure_ascii=False)
+        directory = os.path.dirname(self.data_file) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix="state_", suffix=".json", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, ensure_ascii=False)
+            os.replace(temp_path, self.data_file)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
 
     def add_session_time(self, user_id: int, until: dt.datetime | None = None):
         uid = str(user_id)
