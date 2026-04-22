@@ -54,7 +54,7 @@ class VoiceTimeCog(commands.Cog):
             f"{start_at.astimezone(KST).strftime('%Y-%m-%d %H:%M')} ~ "
             f"{end_at.astimezone(KST).strftime('%Y-%m-%d %H:%M')}"
         )
-        await channel.send(f"새 일정이 등록되었습니다 📅\n{line}")
+        await channel.send(f"공부 일정이 종료되었습니다 📅\n{line}")
 
     async def _create_notion_voice_record(self, member: discord.Member, start_at: dt.datetime, end_at: dt.datetime):
         if not NOTION_TOKEN or not NOTION_DATABASE_SCHEDULE_ID:
