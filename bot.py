@@ -30,6 +30,7 @@ def get_git_commit_info():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (id={bot.user.id})")
+    print(f"[DEBUG] deploy channel id: {REPORT_CHANNEL_ID_DEPLOY}")
 
     try:
         synced = await bot.tree.sync()
@@ -59,7 +60,10 @@ async def on_ready():
                 embed.set_footer(text=f"버전: {bot.user.name} | 현재 시간 정상 작동 중")
                 
                 await channel.send(embed=embed)
+                print(f"[DEBUG] 배포 알림 전송 완료: channel={REPORT_CHANNEL_ID_DEPLOY}")
                 
         except Exception as e:
             print(f"[ERROR] 배포 알림 전송 실패: {e}")
+    else:
+        print("[DEBUG] REPORT_CHANNEL_ID_DEPLOY 미설정으로 배포 알림 생략")
             
