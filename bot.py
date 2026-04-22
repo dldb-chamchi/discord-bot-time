@@ -2,7 +2,7 @@
 import discord
 import subprocess  # [추가] 깃 명령어 실행용
 from discord.ext import commands
-from config import REPORT_CHANNEL_ID_FEATURE
+from config import REPORT_CHANNEL_ID_DEPLOY
 
 intents = discord.Intents.default()
 intents.guilds = True
@@ -40,11 +40,11 @@ async def on_ready():
     # ---------------------------------------------------------
     # 배포 완료 알림 (커밋 정보 포함)
     # ---------------------------------------------------------
-    if REPORT_CHANNEL_ID_FEATURE:
+    if REPORT_CHANNEL_ID_DEPLOY:
         try:
-            channel = bot.get_channel(REPORT_CHANNEL_ID_FEATURE)
+            channel = bot.get_channel(REPORT_CHANNEL_ID_DEPLOY)
             if not channel:
-                channel = await bot.fetch_channel(REPORT_CHANNEL_ID_FEATURE)
+                channel = await bot.fetch_channel(REPORT_CHANNEL_ID_DEPLOY)
             
             if channel:
                 # 커밋 정보 조회
