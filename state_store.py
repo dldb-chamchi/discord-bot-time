@@ -13,6 +13,8 @@ class StateStore:
         self.state: Dict[str, Any] = {
             "totals": {},           # user_id(str) -> 누적 초(int) [주간 리포트용]
             "sessions": {},         # user_id(str) -> 시작시각(ISO str)
+            "last_study_at": {},    # user_id(str) -> 마지막 30분 이상 공부 시각(ISO str)
+            "study_tracking_started_at": None,
             "schedule_progress": {}, # [추가] page_id(str) -> 누적 초(int) [일정별 칭찬용]
             "praised_pages": []      # [추가] page_id(str) 목록 [중복 칭찬 방지용]
         }
@@ -24,6 +26,8 @@ class StateStore:
                     data = json.load(f)
                     self.state["totals"] = data.get("totals", {})
                     self.state["sessions"] = data.get("sessions", {})
+                    self.state["last_study_at"] = data.get("last_study_at", {})
+                    self.state["study_tracking_started_at"] = data.get("study_tracking_started_at")
                     self.state["schedule_progress"] = data.get("schedule_progress", {})
                     self.state["praised_pages"] = data.get("praised_pages", [])
             except Exception:

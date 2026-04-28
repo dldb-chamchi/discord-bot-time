@@ -31,6 +31,9 @@ class VoiceTimeCog(commands.Cog):
         self.bot = bot
         self.store = StateStore(DATA_FILE)
         self.store.load()
+        if not self.store.state.get("study_tracking_started_at"):
+            self.store.state["study_tracking_started_at"] = iso(now_kst())
+            self.store.save()
         self.channel_active = False
         self.last_alert_time: dt.datetime | None = None
         self.daily_reporter.start()
@@ -158,6 +161,8 @@ class VoiceTimeCog(commands.Cog):
                 start_time = parse_iso(start_iso)
                 if start_time.tzinfo is None:
                     start_time = start_time.replace(tzinfo=KST)
+                self.store.state["last_study_at"][uid] = iso(leave_time)
+                self.store.save()
                 await self._create_notion_voice_record(member, start_time, leave_time)
             else:
                 print(f"[DEBUG] 30분 미만 세션이라 노션 기록 생략: {member.display_name} ({session_seconds}s)")
