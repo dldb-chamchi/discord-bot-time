@@ -95,6 +95,7 @@ class NotionWatcherCog(commands.Cog):
         clean_db_id = _clean_env(db_id)
         if not clean_db_id:
             return []
+        db_label = clean_db_id[-8:] if len(clean_db_id) > 8 else clean_db_id
         url = f"https://api.notion.com/v1/databases/{clean_db_id}/query"
         headers = {
             "Authorization": f"Bearer {_clean_env(NOTION_TOKEN)}",
@@ -105,10 +106,13 @@ class NotionWatcherCog(commands.Cog):
         try:
             async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status != 200:
+                    text = await resp.text()
+                    print(f"[NOTION] DB 조회 실패 db={db_label} status={resp.status} body={text[:500]}")
                     return []
                 data = await resp.json()
                 return data.get("results", [])
-        except Exception:
+        except Exception as e:
+            print(f"[NOTION] DB 조회 예외 db={db_label}: {e}")
             return []
 
     @tasks.loop(seconds=60)
@@ -121,10 +125,23 @@ class NotionWatcherCog(commands.Cog):
                     rows = await self._fetch_notion_db(session, NOTION_DATABASE_FEATURE_ID)
                     new_row_ids = {row["id"] for row in rows}
                     only_new = new_row_ids - self.last_notion_row_ids
+                    print(
+                        "[NOTION] 기능 DB 폴링 "
+                        f"stored={len(self.last_notion_row_ids)} "
+                        f"fetched={len(new_row_ids)} "
+                        f"new={len(only_new)} "
+                        f"statuses={len(self.last_feature_status_by_id)}"
+                    )
 
                     if only_new:
                         await asyncio.sleep(20)
                         rows = await self._fetch_notion_db(session, NOTION_DATABASE_FEATURE_ID)
+                        print(
+                            "[NOTION] 기능 DB 신규 감지 후 재조회 "
+                            f"stored={len(self.last_notion_row_ids)} "
+                            f"fetched={len(rows)} "
+                            f"new={len(only_new)}"
+                        )
 
                     if only_new:
                         new_req, new_comp = [], []
@@ -210,15 +227,27 @@ class NotionWatcherCog(commands.Cog):
                         await self._send_long_message(ch, "기능이 추가됐습니다 ✅", st_change)
 
                     self.last_notion_row_ids = new_row_ids
+                    print(
+                        "[NOTION] 기능 DB 상태 저장 "
+                        f"features={len(self.last_notion_row_ids)} "
+                        f"statuses={len(self.last_feature_status_by_id)}"
+                    )
                     self.save_state()
 
                 if NOTION_DATABASE_BOARD_ID and REPORT_CHANNEL_ID_ALARM:
                     rows = await self._fetch_notion_db(session, NOTION_DATABASE_BOARD_ID)
                     ids = {r["id"] for r in rows}
+                    print(
+                        "[NOTION] 게시판 DB 폴링 "
+                        f"stored={len(self.last_board_row_ids)} "
+                        f"fetched={len(ids)} "
+                        f"new={len(ids - self.last_board_row_ids)}"
+                    )
                     if ids - self.last_board_row_ids:
                         ch = self.bot.get_channel(REPORT_CHANNEL_ID_ALARM) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_ALARM)
                         await ch.send("게시판에 새로운 글이 올라왔습니다.")
                         self.last_board_row_ids = ids
+                        print(f"[NOTION] 게시판 DB 상태 저장 boards={len(self.last_board_row_ids)}")
                         self.save_state()
 
         except Exception as e:
