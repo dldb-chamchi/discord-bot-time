@@ -220,10 +220,19 @@ class NotionWatcherCog(commands.Cog):
                                     for x in (props.get("설명", {}).get("rich_text") or props.get("Description", {}).get("rich_text") or [])
                                 ) or "(설명 없음)"
                                 st_change.append(f"- {c_txt} — {d_txt}")
+                                print(
+                                    "[NOTION] 기능 완료 상태 변경 감지 "
+                                    f"id={row['id']} "
+                                    f"prev='{prev}' "
+                                    f"curr='{','.join(status_names)}' "
+                                    f"title='{c_txt}'"
+                                )
                         self.last_feature_status_by_id[row["id"]] = ",".join(status_names)
 
+                    print(f"[NOTION] 기능 완료 상태 변경 발송 대상 count={len(st_change)}")
                     if st_change:
                         ch = self.bot.get_channel(REPORT_CHANNEL_ID_FEATURE) or await self.bot.fetch_channel(REPORT_CHANNEL_ID_FEATURE)
+                        print(f"[NOTION] 기능이 추가됐습니다 상태 변경 메시지 발송 count={len(st_change)}")
                         await self._send_long_message(ch, "기능이 추가됐습니다 ✅", st_change)
 
                     self.last_notion_row_ids = new_row_ids
